@@ -333,8 +333,11 @@ export default {
           this.events[index] = { ...this.events[index], ...eventData };
         }
       } else {
-        const newId = Math.max(0, ...this.events.map(e => e.id || 0)) + 1;
-        this.events.push({ ...eventData, id: newId });
+        // Generate unique ID using timestamp + random number for robustness
+        const ids = this.events.map(e => (typeof e.id === 'number' && e.id > 0) ? e.id : 0);
+        const maxId = ids.length > 0 ? Math.max(...ids) : 0;
+        const newId = maxId + 1;
+        this.events.push({ ...eventData, id: newId, created_at: new Date().toISOString() });
       }
       localStorage.setItem('calendarEvents', JSON.stringify(this.events));
     }

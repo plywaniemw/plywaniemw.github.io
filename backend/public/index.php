@@ -41,7 +41,13 @@ function getEvents(string $dataFile): array
         return [];
     }
     $content = file_get_contents($dataFile);
+    if ($content === false) {
+        return [];
+    }
     $data = json_decode($content, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        return [];
+    }
     return is_array($data) ? $data : [];
 }
 
@@ -83,8 +89,9 @@ $app->post('/api/events', function (Request $request, Response $response) use ($
     
     $events = getEvents($dataFile);
     
-    // Generate unique ID
-    $newId = empty($events) ? 1 : max(array_column($events, 'id')) + 1;
+    // Generate unique ID - filter out events without valid id field
+    $ids = array_filter(array_column($events, 'id'), fn($id) => is_int($id) && $id > 0);
+    $newId = empty($ids) ? 1 : max($ids) + 1;
     
     $newEvent = [
         'id' => $newId,
