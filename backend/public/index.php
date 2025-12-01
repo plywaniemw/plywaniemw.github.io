@@ -31,54 +31,61 @@ $app->options('/{routes:.+}', function (Request $request, Response $response): R
     return $response;
 });
 
-// Data file path for simple JSON storage
-$dataFile = __DIR__ . '/../data/events.json';
+// Database configuration - SQLite
+$dbPath = __DIR__ . '/../data/calendar.db';
 
-// Helper function to read events
-function getEvents(string $dataFile): array
+// Initialize database connection
+function getDatabase(string $dbPath): PDO
 {
-    if (!file_exists($dataFile)) {
-        return [];
-    }
-    $content = file_get_contents($dataFile);
-    if ($content === false) {
-        return [];
-    }
-    $data = json_decode($content, true);
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        return [];
-    }
-    return is_array($data) ? $data : [];
-}
-
-// Helper function to save events
-function saveEvents(string $dataFile, array $events): void
-{
-    $dir = dirname($dataFile);
+    $dir = dirname($dbPath);
     if (!is_dir($dir)) {
         mkdir($dir, 0755, true);
     }
-    file_put_contents($dataFile, json_encode($events, JSON_PRETTY_PRINT));
+    
+    $pdo = new PDO('sqlite:' . $dbPath);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    
+    // Create events table if it doesn't exist
+    $pdo->exec('
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            date TEXT NOT NULL,
+            time TEXT,
+            description TEXT,
+            instructor TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT
+        )
+    ');
+    
+    return $pdo;
 }
 
+// Get database connection
+$db = getDatabase($dbPath);
+
 // Get all events
-$app->get('/api/events', function (Request $request, Response $response) use ($dataFile): Response {
-    $events = getEvents($dataFile);
+$app->get('/api/events', function (Request $request, Response $response) use ($db): Response {
+    $stmt = $db->query('SELECT * FROM events ORDER BY date, time');
+    $events = $stmt->fetchAll();
     $response->getBody()->write(json_encode($events));
     return $response->withHeader('Content-Type', 'application/json');
 });
 
 // Get events for a specific date
-$app->get('/api/events/{date}', function (Request $request, Response $response, array $args) use ($dataFile): Response {
+$app->get('/api/events/{date}', function (Request $request, Response $response, array $args) use ($db): Response {
     $date = $args['date'];
-    $events = getEvents($dataFile);
-    $filteredEvents = array_filter($events, fn($event) => $event['date'] === $date);
-    $response->getBody()->write(json_encode(array_values($filteredEvents)));
+    $stmt = $db->prepare('SELECT * FROM events WHERE date = :date ORDER BY time');
+    $stmt->execute([':date' => $date]);
+    $events = $stmt->fetchAll();
+    $response->getBody()->write(json_encode($events));
     return $response->withHeader('Content-Type', 'application/json');
 });
 
 // Create a new event
-$app->post('/api/events', function (Request $request, Response $response) use ($dataFile): Response {
+$app->post('/api/events', function (Request $request, Response $response) use ($db): Response {
     $data = $request->getParsedBody();
     
     // Validate required fields
@@ -87,79 +94,110 @@ $app->post('/api/events', function (Request $request, Response $response) use ($
         return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
     }
     
-    $events = getEvents($dataFile);
+    $stmt = $db->prepare('
+        INSERT INTO events (title, date, time, description, instructor, created_at)
+        VALUES (:title, :date, :time, :description, :instructor, :created_at)
+    ');
     
-    // Generate unique ID - filter out events without valid id field
-    $ids = array_filter(array_column($events, 'id'), fn($id) => is_int($id) && $id > 0);
-    $newId = empty($ids) ? 1 : max($ids) + 1;
+    $stmt->execute([
+        ':title' => htmlspecialchars($data['title'], ENT_QUOTES, 'UTF-8'),
+        ':date' => $data['date'],
+        ':time' => $data['time'] ?? '',
+        ':description' => htmlspecialchars($data['description'] ?? '', ENT_QUOTES, 'UTF-8'),
+        ':instructor' => htmlspecialchars($data['instructor'] ?? '', ENT_QUOTES, 'UTF-8'),
+        ':created_at' => date('Y-m-d H:i:s')
+    ]);
     
-    $newEvent = [
-        'id' => $newId,
-        'title' => htmlspecialchars($data['title'], ENT_QUOTES, 'UTF-8'),
-        'date' => $data['date'],
-        'time' => $data['time'] ?? '',
-        'description' => htmlspecialchars($data['description'] ?? '', ENT_QUOTES, 'UTF-8'),
-        'instructor' => htmlspecialchars($data['instructor'] ?? '', ENT_QUOTES, 'UTF-8'),
-        'created_at' => date('Y-m-d H:i:s')
-    ];
+    $newId = (int) $db->lastInsertId();
     
-    $events[] = $newEvent;
-    saveEvents($dataFile, $events);
+    // Fetch the created event
+    $stmt = $db->prepare('SELECT * FROM events WHERE id = :id');
+    $stmt->execute([':id' => $newId]);
+    $newEvent = $stmt->fetch();
     
     $response->getBody()->write(json_encode($newEvent));
     return $response->withStatus(201)->withHeader('Content-Type', 'application/json');
 });
 
 // Update an event
-$app->put('/api/events/{id}', function (Request $request, Response $response, array $args) use ($dataFile): Response {
+$app->put('/api/events/{id}', function (Request $request, Response $response, array $args) use ($db): Response {
     $id = (int) $args['id'];
     $data = $request->getParsedBody();
     
-    $events = getEvents($dataFile);
-    $index = array_search($id, array_column($events, 'id'));
+    // Check if event exists
+    $stmt = $db->prepare('SELECT * FROM events WHERE id = :id');
+    $stmt->execute([':id' => $id]);
+    $existingEvent = $stmt->fetch();
     
-    if ($index === false) {
+    if (!$existingEvent) {
         $response->getBody()->write(json_encode(['error' => 'Event not found']));
         return $response->withStatus(404)->withHeader('Content-Type', 'application/json');
     }
     
-    $events[$index] = array_merge($events[$index], [
-        'title' => htmlspecialchars($data['title'] ?? $events[$index]['title'], ENT_QUOTES, 'UTF-8'),
-        'date' => $data['date'] ?? $events[$index]['date'],
-        'time' => $data['time'] ?? $events[$index]['time'],
-        'description' => htmlspecialchars($data['description'] ?? $events[$index]['description'], ENT_QUOTES, 'UTF-8'),
-        'instructor' => htmlspecialchars($data['instructor'] ?? $events[$index]['instructor'], ENT_QUOTES, 'UTF-8'),
-        'updated_at' => date('Y-m-d H:i:s')
+    $stmt = $db->prepare('
+        UPDATE events 
+        SET title = :title, date = :date, time = :time, 
+            description = :description, instructor = :instructor, updated_at = :updated_at
+        WHERE id = :id
+    ');
+    
+    $stmt->execute([
+        ':id' => $id,
+        ':title' => htmlspecialchars($data['title'] ?? $existingEvent['title'], ENT_QUOTES, 'UTF-8'),
+        ':date' => $data['date'] ?? $existingEvent['date'],
+        ':time' => $data['time'] ?? $existingEvent['time'],
+        ':description' => htmlspecialchars($data['description'] ?? $existingEvent['description'], ENT_QUOTES, 'UTF-8'),
+        ':instructor' => htmlspecialchars($data['instructor'] ?? $existingEvent['instructor'], ENT_QUOTES, 'UTF-8'),
+        ':updated_at' => date('Y-m-d H:i:s')
     ]);
     
-    saveEvents($dataFile, $events);
+    // Fetch the updated event
+    $stmt = $db->prepare('SELECT * FROM events WHERE id = :id');
+    $stmt->execute([':id' => $id]);
+    $updatedEvent = $stmt->fetch();
     
-    $response->getBody()->write(json_encode($events[$index]));
+    $response->getBody()->write(json_encode($updatedEvent));
     return $response->withHeader('Content-Type', 'application/json');
 });
 
 // Delete an event
-$app->delete('/api/events/{id}', function (Request $request, Response $response, array $args) use ($dataFile): Response {
+$app->delete('/api/events/{id}', function (Request $request, Response $response, array $args) use ($db): Response {
     $id = (int) $args['id'];
     
-    $events = getEvents($dataFile);
-    $index = array_search($id, array_column($events, 'id'));
+    // Check if event exists
+    $stmt = $db->prepare('SELECT * FROM events WHERE id = :id');
+    $stmt->execute([':id' => $id]);
+    $existingEvent = $stmt->fetch();
     
-    if ($index === false) {
+    if (!$existingEvent) {
         $response->getBody()->write(json_encode(['error' => 'Event not found']));
         return $response->withStatus(404)->withHeader('Content-Type', 'application/json');
     }
     
-    array_splice($events, $index, 1);
-    saveEvents($dataFile, $events);
+    $stmt = $db->prepare('DELETE FROM events WHERE id = :id');
+    $stmt->execute([':id' => $id]);
     
     $response->getBody()->write(json_encode(['message' => 'Event deleted successfully']));
     return $response->withHeader('Content-Type', 'application/json');
 });
 
 // Health check endpoint
-$app->get('/api/health', function (Request $request, Response $response): Response {
-    $response->getBody()->write(json_encode(['status' => 'ok', 'timestamp' => date('Y-m-d H:i:s')]));
+$app->get('/api/health', function (Request $request, Response $response) use ($db): Response {
+    try {
+        $db->query('SELECT 1');
+        $response->getBody()->write(json_encode([
+            'status' => 'ok',
+            'database' => 'connected',
+            'timestamp' => date('Y-m-d H:i:s')
+        ]));
+    } catch (Exception $e) {
+        $response->getBody()->write(json_encode([
+            'status' => 'error',
+            'database' => 'disconnected',
+            'timestamp' => date('Y-m-d H:i:s')
+        ]));
+        return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+    }
     return $response->withHeader('Content-Type', 'application/json');
 });
 

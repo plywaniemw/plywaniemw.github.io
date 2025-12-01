@@ -10,12 +10,13 @@ Aplikacja webowa do zarządzania zajęciami pływackimi z interfejsem kalendarza
 - ✏️ Edit existing classes
 - 🗑️ Delete classes
 - 📱 Responsive design for mobile and desktop
+- 💾 SQLite database storage for persistent data
 
 ## Technology Stack / Stos Technologiczny
 
 ### Backend
 - **PHP 8.x** with **Slim Framework 4** - lightweight RESTful API
-- JSON file-based storage for simplicity
+- **SQLite** database for data storage
 
 ### Frontend
 - **Vue.js 3** - reactive JavaScript framework
@@ -29,7 +30,7 @@ Aplikacja webowa do zarządzania zajęciami pływackimi z interfejsem kalendarza
 │   ├── public/
 │   │   └── index.php          # API entry point
 │   ├── data/
-│   │   └── events.json        # Events storage
+│   │   └── calendar.db        # SQLite database (auto-created)
 │   ├── composer.json
 │   └── composer.lock
 ├── frontend/
