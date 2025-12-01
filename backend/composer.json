@@ -1,0 +1,8 @@
+{
+    "name": "plywanie/calendar-api",
+    "description": "Calendar API for swimming classes",
+    "require": {
+        "slim/slim": "^4.15",
+        "slim/psr7": "^1.8"
+    }
+}
